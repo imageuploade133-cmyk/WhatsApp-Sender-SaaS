@@ -16,6 +16,20 @@ export interface WhatsAppStatus {
   error: string | null;
 }
 
+// Resolve correct persistent auth path (use root-level mount '/.auth' in production, or local '.auth' folder in dev)
+const authPath = process.env.NODE_ENV === 'production'
+  ? '/.auth'
+  : path.join(process.cwd(), '.auth');
+
+// Ensure directory exists
+if (!fs.existsSync(authPath)) {
+  try {
+    fs.mkdirSync(authPath, { recursive: true });
+  } catch (err) {
+    console.error(`[WhatsAppService] Failed to create auth directory at ${authPath}:`, err);
+  }
+}
+
 class WhatsAppService {
   private client: Client | null = null;
   private status: WhatsAppStatus = {
@@ -31,14 +45,10 @@ class WhatsAppService {
   };
 
   constructor() {
-    // Attempt auto-connect if a session already exists on startup
-    const sessionPath = path.join(process.cwd(), '.auth', 'session-whatsapp-session');
-    if (fs.existsSync(sessionPath)) {
-      console.log('[WhatsAppService] Existing session found, initiating auto-connect...');
-      this.connect().catch((err) => {
-        console.error('[WhatsAppService] Auto-connect failed:', err);
-      });
-    }
+    console.log('[WhatsAppService] Starting up and auto-connecting WhatsApp client...');
+    this.connect().catch((err) => {
+      console.error('[WhatsAppService] Initial auto-connect failed:', err?.message || err);
+    });
   }
 
   public getStatus(): WhatsAppStatus {
@@ -62,12 +72,42 @@ class WhatsAppService {
     this.status.error = null;
     this.status.qrCodeUrl = null;
 
-    console.log('[WhatsAppService] Initializing WhatsApp client...');
+    // --- Startup Diagnostics & Environment Auditing ---
+    console.log('[WhatsAppService] --- Startup Diagnostics ---');
+    console.log(`- NODE_ENV: ${process.env.NODE_ENV}`);
+    console.log(`- Configured authPath: ${authPath}`);
+    console.log(`- Target session path: ${path.join(authPath, 'session-whatsapp-session')}`);
+
+    let executablePath: string | undefined = undefined;
+    if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+      if (fs.existsSync(process.env.PUPPETEER_EXECUTABLE_PATH)) {
+        executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+        console.log(`- Dynamic Browser Check: Found custom executable at ${executablePath}`);
+      } else {
+        console.warn(`- Dynamic Browser Check: PUPPETEER_EXECUTABLE_PATH is configured to '${process.env.PUPPETEER_EXECUTABLE_PATH}' but does not exist! Letting Puppeteer auto-detect.`);
+      }
+    } else {
+      console.log('- Dynamic Browser Check: PUPPETEER_EXECUTABLE_PATH is not configured. Letting Puppeteer auto-detect.');
+    }
+
+    // Try finding potential default browser directories for logging purposes
+    const potentialPaths = [
+      '/usr/bin/google-chrome',
+      '/usr/bin/google-chrome-stable',
+      '/usr/bin/chromium',
+      '/usr/bin/chromium-browser',
+    ];
+    potentialPaths.forEach((p) => {
+      if (fs.existsSync(p)) {
+        console.log(`- Dynamic Browser Check: Located default fallback binary on disk: ${p}`);
+      }
+    });
 
     try {
+      console.log('[WhatsAppService] Initializing WhatsApp client...');
       this.client = new Client({
         authStrategy: new LocalAuth({
-          dataPath: path.join(process.cwd(), '.auth'),
+          dataPath: authPath,
           clientId: 'whatsapp-session',
         }),
         puppeteer: {
@@ -78,10 +118,11 @@ class WhatsAppService {
             '--disable-dev-shm-usage',
             '--disable-gpu',
           ],
-          executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+          executablePath,
         },
       });
 
+      // --- Register Event Listeners ---
       this.client.on('qr', async (qr) => {
         console.log('[WhatsAppService] QR code received.');
         this.status.status = 'Waiting for Scan';
@@ -129,19 +170,29 @@ class WhatsAppService {
         this.cleanup();
       });
 
-      // Handle underlying browser crash or disconnects
-      this.client.initialize().catch((err: any) => {
-        console.error('[WhatsAppService] Client initialize promise rejected:', err);
-        this.status.status = 'Error';
-        this.status.error = err?.message || 'Failed to initialize WhatsApp browser';
-        this.cleanup();
+      // Register debugging & state monitoring events
+      this.client.on('loading_screen', (percent, message) => {
+        console.log(`[WhatsAppService] Loading Screen Status: ${percent}% - ${message}`);
       });
 
+      this.client.on('change_state', (state) => {
+        console.log(`[WhatsAppService] Client state changed: ${state}`);
+      });
+
+      this.client.on('remote_session_saved', () => {
+        console.log('[WhatsAppService] Remote session saved successfully.');
+      });
+
+      // Await client initialization completely to handle errors synchronously
+      await this.client.initialize();
+      console.log('[WhatsAppService] Client initialization completed.');
+
     } catch (error: any) {
-      console.error('[WhatsAppService] Failed to setup client:', error);
+      console.error('[WhatsAppService] Fatal error during WhatsApp client setup or launch:', error);
       this.status.status = 'Error';
-      this.status.error = error?.message || 'Configuration error';
-      this.client = null;
+      this.status.error = error?.message || 'Configuration or browser launch error';
+      await this.cleanup();
+      throw error;
     }
   }
 
@@ -156,11 +207,11 @@ class WhatsAppService {
     this.status.connectedSince = null;
 
     // Delete session files
-    const sessionPath = path.join(process.cwd(), '.auth', 'session-whatsapp-session');
+    const sessionPath = path.join(authPath, 'session-whatsapp-session');
     if (fs.existsSync(sessionPath)) {
       try {
         fs.rmSync(sessionPath, { recursive: true, force: true });
-        console.log('[WhatsAppService] Session files deleted successfully.');
+        console.log('[WhatsAppService] Session files deleted successfully from persistent path.');
       } catch (err) {
         console.error('[WhatsAppService] Error deleting session files:', err);
       }
@@ -173,7 +224,7 @@ class WhatsAppService {
     }
 
     // Standard formatting: strip non-digits, ensure @c.us suffix
-    let cleanNumber = phoneNumber.replace(/\D/g, '');
+    const cleanNumber = phoneNumber.replace(/\D/g, '');
     if (!cleanNumber) {
       throw new Error(`Invalid phone number format: ${phoneNumber}`);
     }
