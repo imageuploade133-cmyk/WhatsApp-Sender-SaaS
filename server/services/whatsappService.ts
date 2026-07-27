@@ -76,6 +76,7 @@ class WhatsAppService {
     console.log(`- NODE_ENV: ${process.env.NODE_ENV}`);
     console.log(`- Configured authPath: ${authPath}`);
     console.log(`- Target session path: ${path.join(authPath, 'session-whatsapp-session')}`);
+    console.log(`- PUPPETEER_CACHE_DIR: ${process.env.PUPPETEER_CACHE_DIR}`);
 
     let executablePath: string | undefined = undefined;
     if (process.env.PUPPETEER_EXECUTABLE_PATH) {
