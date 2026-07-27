@@ -130,7 +130,6 @@ class WhatsAppService {
     // Determine the browser installation dynamically via recursive caching audit
     const searchDirs = [
       process.env.PUPPETEER_CACHE_DIR,
-      '/opt/render/project/src/.cache/puppeteer',
       path.join(process.cwd(), '.cache', 'puppeteer'),
     ].filter(Boolean) as string[];
 
