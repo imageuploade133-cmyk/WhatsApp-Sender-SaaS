@@ -2,7 +2,7 @@ services:
   - type: web
     name: whatsapp-sender-saas
     runtime: node
-    buildCommand: PUPPETEER_CACHE_DIR=/opt/render/.cache/puppeteer npm install && PUPPETEER_CACHE_DIR=/opt/render/.cache/puppeteer npx puppeteer browsers install chrome && npm run build
+    buildCommand: PUPPETEER_CACHE_DIR=/opt/render/project/src/.cache/puppeteer npm install && PUPPETEER_CACHE_DIR=/opt/render/project/src/.cache/puppeteer npx puppeteer browsers install chrome && npm run build
     startCommand: npm start
     envVars:
       - key: ADMIN_EMAIL
@@ -14,4 +14,4 @@ services:
       - key: NODE_ENV
         value: "production"
       - key: PUPPETEER_CACHE_DIR
-        value: "/opt/render/.cache/puppeteer"
+        value: "/opt/render/project/src/.cache/puppeteer"
