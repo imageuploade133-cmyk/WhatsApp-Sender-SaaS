@@ -37,3 +37,6 @@ next-env.d.ts
 
 # whatsapp sessions
 /.auth/
+
+# local puppeteer cache
+/.cache/
