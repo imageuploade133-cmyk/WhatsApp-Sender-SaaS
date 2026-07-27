@@ -13,7 +13,3 @@ services:
         value: "3000"
       - key: NODE_ENV
         value: "production"
-    disk:
-      name: auth-session-store
-      mountPath: /.auth
-      sizeGB: 1

@@ -16,15 +16,14 @@ export interface WhatsAppStatus {
   error: string | null;
 }
 
-// Resolve correct persistent auth path (use root-level mount '/.auth' in production, or local '.auth' folder in dev)
-const authPath = process.env.NODE_ENV === 'production'
-  ? '/.auth'
-  : path.join(process.cwd(), '.auth');
+// Render Free Compatibility: store LocalAuth sessions inside current working directory
+const authPath = path.join(process.cwd(), '.auth');
 
-// Ensure directory exists
+// Ensure directory exists inside project cwd
 if (!fs.existsSync(authPath)) {
   try {
     fs.mkdirSync(authPath, { recursive: true });
+    console.log(`[WhatsAppService] Created Local auth directory at: ${authPath}`);
   } catch (err) {
     console.error(`[WhatsAppService] Failed to create auth directory at ${authPath}:`, err);
   }
