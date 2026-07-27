@@ -29,6 +29,45 @@ if (!fs.existsSync(authPath)) {
   }
 }
 
+// Helper to recursively find Chrome/Chromium executable binary inside a directory
+function findChromeExecutable(dirPath: string): string | null {
+  if (!fs.existsSync(dirPath)) return null;
+
+  try {
+    const files = fs.readdirSync(dirPath);
+    for (const file of files) {
+      const fullPath = path.join(dirPath, file);
+      let stat;
+      try {
+        stat = fs.statSync(fullPath);
+      } catch {
+        continue;
+      }
+
+      if (stat.isDirectory()) {
+        const found = findChromeExecutable(fullPath);
+        if (found) return found;
+      } else if (file === 'chrome' || file === 'chrome.exe') {
+        // Attempt to verify/set execution permissions on Unix/Linux
+        try {
+          fs.accessSync(fullPath, fs.constants.X_OK);
+        } catch {
+          try {
+            fs.chmodSync(fullPath, 0o755);
+            console.log(`[WhatsAppService] Set executable permissions (0755) on: ${fullPath}`);
+          } catch (chmodErr) {
+            console.warn(`[WhatsAppService] Warning: Could not chmod executable: ${fullPath}`, chmodErr);
+          }
+        }
+        return fullPath;
+      }
+    }
+  } catch (e) {
+    console.error(`[WhatsAppService] Error scanning directory ${dirPath}:`, e);
+  }
+  return null;
+}
+
 class WhatsAppService {
   private client: Client | null = null;
   private status: WhatsAppStatus = {
@@ -78,30 +117,58 @@ class WhatsAppService {
     console.log(`- Target session path: ${path.join(authPath, 'session-whatsapp-session')}`);
     console.log(`- PUPPETEER_CACHE_DIR: ${process.env.PUPPETEER_CACHE_DIR}`);
 
-    let executablePath: string | undefined = undefined;
-    if (process.env.PUPPETEER_EXECUTABLE_PATH) {
-      if (fs.existsSync(process.env.PUPPETEER_EXECUTABLE_PATH)) {
-        executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
-        console.log(`- Dynamic Browser Check: Found custom executable at ${executablePath}`);
-      } else {
-        console.warn(`- Dynamic Browser Check: PUPPETEER_EXECUTABLE_PATH is configured to '${process.env.PUPPETEER_EXECUTABLE_PATH}' but does not exist! Letting Puppeteer auto-detect.`);
-      }
-    } else {
-      console.log('- Dynamic Browser Check: PUPPETEER_EXECUTABLE_PATH is not configured. Letting Puppeteer auto-detect.');
+    // Audit puppeteer versions
+    try {
+      const puppeteerPkg = require('puppeteer/package.json');
+      console.log(`- Installed Puppeteer version: ${puppeteerPkg.version}`);
+    } catch {
+      console.log('- Installed Puppeteer version: Unknown (could not load package.json)');
     }
 
-    // Try finding potential default browser directories for logging purposes
-    const potentialPaths = [
-      '/usr/bin/google-chrome',
-      '/usr/bin/google-chrome-stable',
-      '/usr/bin/chromium',
-      '/usr/bin/chromium-browser',
-    ];
-    potentialPaths.forEach((p) => {
-      if (fs.existsSync(p)) {
-        console.log(`- Dynamic Browser Check: Located default fallback binary on disk: ${p}`);
+    let executablePath: string | undefined = undefined;
+
+    // Determine the browser installation dynamically via recursive caching audit
+    const searchDirs = [
+      process.env.PUPPETEER_CACHE_DIR,
+      '/opt/render/project/src/.cache/puppeteer',
+      path.join(process.cwd(), '.cache', 'puppeteer'),
+    ].filter(Boolean) as string[];
+
+    console.log('[WhatsAppService] Auditing cache directories for downloaded Chrome binaries...');
+    for (const dir of searchDirs) {
+      console.log(`- Searching in: ${dir}`);
+      const found = findChromeExecutable(dir);
+      if (found) {
+        executablePath = found;
+        console.log(`- Dynamic Browser Check: SUCCESS! Located downloaded Chrome binary at: ${executablePath}`);
+        break;
       }
-    });
+    }
+
+    // Default system fallback paths
+    if (!executablePath) {
+      const potentialPaths = [
+        process.env.PUPPETEER_EXECUTABLE_PATH,
+        '/usr/bin/google-chrome',
+        '/usr/bin/google-chrome-stable',
+        '/usr/bin/chromium',
+        '/usr/bin/chromium-browser',
+      ].filter(Boolean) as string[];
+
+      for (const p of potentialPaths) {
+        if (fs.existsSync(p)) {
+          executablePath = p;
+          console.log(`- Dynamic Browser Check: Found fallback system binary on disk: ${p}`);
+          break;
+        }
+      }
+    }
+
+    if (executablePath) {
+      console.log(`[WhatsAppService] Launching browser using resolved path: ${executablePath}`);
+    } else {
+      console.warn('[WhatsAppService] WARNING: No Chrome/Chromium binary could be auto-resolved! Proceeding with Puppeteer default lookup.');
+    }
 
     try {
       console.log('[WhatsAppService] Initializing WhatsApp client...');
