@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: whatsapp-sender-saas
+    runtime: node
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: ADMIN_EMAIL
+        placeholder: "Enter admin login email"
+      - key: ADMIN_PASSWORD
+        placeholder: "Enter admin login password"
+      - key: PORT
+        value: "3000"
+      - key: NODE_ENV
+        value: "production"
+    disk:
+      name: auth-session-store
+      mountPath: /.auth
+      sizeGB: 1
