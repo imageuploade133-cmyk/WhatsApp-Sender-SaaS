@@ -18,8 +18,6 @@ export interface WhatsAppStatus {
 }
 
 // --- Dynamic Platform-Agnostic Auth Storage Resolver ---
-// Scans standard mount points for persistent volumes (for both Render paid volumes and Railway volumes).
-// Falls back gracefully to local process directory if no persistent mount is detected.
 const potentialPersistentPaths = [
   '/.auth',
   '/data/.auth',
@@ -33,18 +31,17 @@ for (const p of potentialPersistentPaths) {
   try {
     const parentDir = path.dirname(p);
     if (fs.existsSync(parentDir)) {
-      // Ensure the directory is writable by making it
       fs.mkdirSync(p, { recursive: true });
       authPath = p;
       console.log(`[WhatsAppService] Dynamic Storage: Selected persistent path for LocalAuth: ${authPath}`);
       break;
     }
   } catch (err) {
-    // If permission or access fails, fall through to check next potential path
+    // Fail-safe
   }
 }
 
-// Ensure the resolved directory exists
+// Ensure resolved directory exists
 if (!fs.existsSync(authPath)) {
   try {
     fs.mkdirSync(authPath, { recursive: true });
@@ -54,8 +51,8 @@ if (!fs.existsSync(authPath)) {
   }
 }
 
-// Memory-safe promise timeout helper to prevent hanging forever
-async function withTimeout<T>(promise: Promise<T>, ms = 15000): Promise<T> {
+// Memory-safe promise timeout helper to prevent hanging forever (increased to 30s threshold)
+async function withTimeout<T>(promise: Promise<T>, ms = 30000): Promise<T> {
   let timeoutId: NodeJS.Timeout;
   const timeoutPromise = new Promise<never>((_, reject) => {
     timeoutId = setTimeout(() => {
@@ -90,7 +87,6 @@ function findChromeExecutable(dirPath: string): string | null {
         const found = findChromeExecutable(fullPath);
         if (found) return found;
       } else if (file === 'chrome' || file === 'chrome.exe') {
-        // Attempt to verify/set execution permissions on Unix/Linux
         try {
           fs.accessSync(fullPath, fs.constants.X_OK);
         } catch {
@@ -152,22 +148,21 @@ class WhatsAppService {
     this.status.error = null;
     this.status.qrCodeUrl = null;
 
-    // --- Startup Diagnostics & Environment Auditing ---
+    // --- Startup Diagnostics ---
     console.log('[WhatsAppService] --- Startup Diagnostics ---');
     console.log(`- NODE_ENV: ${process.env.NODE_ENV}`);
     console.log(`- Configured authPath: ${authPath}`);
     console.log(`- Target session path: ${path.join(authPath, 'session-whatsapp-session')}`);
     console.log(`- PUPPETEER_CACHE_DIR: ${process.env.PUPPETEER_CACHE_DIR}`);
 
-    // Audit puppeteer versions
     try {
       const puppeteerPkg = require('puppeteer/package.json');
       console.log(`- Installed Puppeteer version: ${puppeteerPkg.version}`);
     } catch {
-      console.log('- Installed Puppeteer version: Unknown (could not load package.json)');
+      console.log('- Installed Puppeteer version: Unknown');
     }
 
-    // Run system-level diagnostics and lookup binaries (especially for Railway Nixpacks)
+    // Run diagnostics
     console.log('[WhatsAppService] --- Railway / System Browser Commands ---');
     const cmds = [
       'which chromium',
@@ -186,12 +181,12 @@ class WhatsAppService {
 
     let executablePath: string | undefined = undefined;
 
-    // 1. Try finding chromium via "which chromium" or "which chromium-browser" dynamically (Railway)
+    // 1. System Chromium path
     try {
       const resolved = execSync('which chromium', { encoding: 'utf-8' }).trim();
       if (resolved && fs.existsSync(resolved)) {
         executablePath = resolved;
-        console.log(`- Dynamic Browser Check: SUCCESS! Located system chromium via 'which chromium': ${executablePath}`);
+        console.log(`- Dynamic Browser Check: SUCCESS! Located system chromium: ${executablePath}`);
       }
     } catch {}
 
@@ -200,12 +195,12 @@ class WhatsAppService {
         const resolved = execSync('which chromium-browser', { encoding: 'utf-8' }).trim();
         if (resolved && fs.existsSync(resolved)) {
           executablePath = resolved;
-          console.log(`- Dynamic Browser Check: SUCCESS! Located system chromium via 'which chromium-browser': ${executablePath}`);
+          console.log(`- Dynamic Browser Check: SUCCESS! Located system chromium-browser: ${executablePath}`);
         }
       } catch {}
     }
 
-    // 2. Fallback: Determine browser installation dynamically via recursive caching audit (Render)
+    // 2. Fallback local cache
     if (!executablePath) {
       const searchDirs = [
         process.env.PUPPETEER_CACHE_DIR,
@@ -214,7 +209,6 @@ class WhatsAppService {
 
       console.log('[WhatsAppService] Auditing cache directories for downloaded Chrome binaries...');
       for (const dir of searchDirs) {
-        console.log(`- Searching in: ${dir}`);
         const found = findChromeExecutable(dir);
         if (found) {
           executablePath = found;
@@ -224,7 +218,7 @@ class WhatsAppService {
       }
     }
 
-    // 3. Fallback: Default standard system paths
+    // 3. Fallback system defaults
     if (!executablePath) {
       const potentialPaths = [
         process.env.PUPPETEER_EXECUTABLE_PATH,
@@ -246,7 +240,7 @@ class WhatsAppService {
     if (executablePath) {
       console.log(`[WhatsAppService] Launching browser using resolved path: ${executablePath}`);
     } else {
-      console.warn('[WhatsAppService] WARNING: No Chrome/Chromium binary could be auto-resolved! Proceeding with Puppeteer default lookup.');
+      console.warn('[WhatsAppService] WARNING: No Chrome/Chromium binary found.');
     }
 
     try {
@@ -256,8 +250,6 @@ class WhatsAppService {
           dataPath: authPath,
           clientId: 'whatsapp-session',
         }),
-        // Fix for "LOADING SCREEN 100% stuck" and pairing issues on new WhatsApp Web versions:
-        // Use wppconnect-team's stable, up-to-date WA Web Cache client
         webVersionCache: {
           type: 'remote',
           remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
@@ -323,7 +315,6 @@ class WhatsAppService {
         this.cleanup();
       });
 
-      // Register debugging & state monitoring events
       this.client.on('loading_screen', (percent, message) => {
         console.log(`[WhatsAppService] Loading Screen Status: ${percent}% - ${message}`);
       });
@@ -336,7 +327,6 @@ class WhatsAppService {
         console.log('[WhatsAppService] Remote session saved successfully.');
       });
 
-      // Await client initialization completely to handle errors synchronously
       await this.client.initialize();
       console.log('[WhatsAppService] Client initialization completed.');
 
@@ -359,7 +349,6 @@ class WhatsAppService {
     this.status.platform = null;
     this.status.connectedSince = null;
 
-    // Delete session files
     const sessionPath = path.join(authPath, 'session-whatsapp-session');
     if (fs.existsSync(sessionPath)) {
       try {
@@ -374,61 +363,75 @@ class WhatsAppService {
   public async sendMessage(phoneNumber: string, message: string): Promise<void> {
     const startTime = Date.now();
     console.log(`[WhatsAppService] === Starting Send Message Process ===`);
-    console.log(`- Original phone: "${phoneNumber}"`);
+    console.log(`- Original phone input: "${phoneNumber}"`);
 
     if (!this.client || this.status.status !== 'Connected') {
-      throw new Error('WhatsApp is not connected');
+      throw new Error('WhatsApp is not connected. Please pair your device first.');
     }
 
-    // Standard formatting: strip non-digits, ensure @c.us suffix
+    // --- State and Diagnostics Auditing ---
+    console.log(`[WhatsAppService] Send Diagnostics Check:`);
+    try {
+      console.log(`- Client Info:`, this.client.info);
+      console.log(`- Client Info WID:`, this.client.info?.wid);
+      console.log(`- Client Info Pushname:`, this.client.info?.pushname);
+
+      const pupPage = (this.client as any).pupPage;
+      const pupBrowser = (this.client as any).pupBrowser;
+
+      console.log(`- Puppeteer Page exists: ${!!pupPage}`);
+      if (pupPage) {
+        console.log(`- Puppeteer Page Closed: ${await pupPage.isClosed()}`);
+        console.log(`- Puppeteer Page URL: ${await pupPage.url()}`);
+        console.log(`- Puppeteer Page Title: ${await pupPage.title()}`);
+      }
+
+      console.log(`- Puppeteer Browser exists: ${!!pupBrowser}`);
+      if (pupBrowser) {
+        console.log(`- Puppeteer Browser Connected: ${await pupBrowser.isConnected()}`);
+      }
+    } catch (diagErr: any) {
+      console.warn(`[WhatsAppService] Diagnostics error (ignored):`, diagErr?.message);
+    }
+
+    // Format phone: strip non-digits, ensure @c.us suffix
     const cleanNumber = phoneNumber.replace(/\D/g, '');
     console.log(`- Normalized phone: "${cleanNumber}"`);
-    if (!cleanNumber) {
-      throw new Error(`Invalid phone number format: ${phoneNumber}`);
+    if (!cleanNumber || cleanNumber.length < 8) {
+      throw new Error(`Invalid phone number length: must be at least 8 digits. Received: "${phoneNumber}"`);
     }
 
     const jid = `${cleanNumber}@c.us`;
     console.log(`- Final Jid: "${jid}"`);
 
     try {
-      console.log(`[WhatsAppService] Checking registration on WhatsApp for: ${jid}...`);
-      const checkStart = Date.now();
+      // NOTE: Bypassing the buggy, hanging `isRegisteredUser()` selector pre-check
+      // of whatsapp-web.js to completely prevent the sendMessage pipeline from getting stuck!
+      // This is a known issue on newer WhatsApp Web sessions. We directly proceed to sendMessage.
+      console.log(`[WhatsAppService] Bypassed isRegisteredUser pre-check to prevent page locks. Proceeding directly to send.`);
 
-      const isRegistered = await withTimeout(
-        this.client.isRegisteredUser(jid),
-        15000
-      );
-
-      console.log(`[WhatsAppService] Registration result: ${isRegistered} (took ${Date.now() - checkStart}ms)`);
-
-      if (!isRegistered) {
-        this.status.messagesFailed++;
-        addToHistory(phoneNumber, message, 'Failed', 'Not a registered WhatsApp number');
-        throw new Error(`The phone number ${phoneNumber} is not registered on WhatsApp`);
-      }
-
-      console.log(`[WhatsAppService] Sending message to ${jid} via whatsapp-web.js...`);
-      const sendStart = Date.now();
+      console.log(`[WhatsAppService] Sending message to JID ${jid} via whatsapp-web.js...`);
+      console.time('sendMessageTotalTime');
 
       const response = await withTimeout(
         this.client.sendMessage(jid, message),
-        15000
+        30000 // 30 second timeout protection
       );
 
-      console.log(`[WhatsAppService] Message sent successfully! Message JID ID: ${response?.id?.id || 'unknown'} (took ${Date.now() - sendStart}ms)`);
+      console.timeEnd('sendMessageTotalTime');
+      console.log(`[WhatsAppService] Message sent successfully! Message JID ID: ${response?.id?.id || 'unknown'}`);
+
       this.status.messagesSentToday++;
       addToHistory(phoneNumber, message, 'Sent');
-      console.log(`[WhatsAppService] === Send Message Process Finished (Total time: ${Date.now() - startTime}ms) ===`);
+      console.log(`[WhatsAppService] === Send Message Process Finished Successfully (Total time: ${Date.now() - startTime}ms) ===`);
     } catch (err: any) {
       console.error(`[WhatsAppService] Send message failed to ${phoneNumber}.`);
       console.error(`- Error Name: ${err?.name || 'unknown'}`);
       console.error(`- Error Message: ${err?.message || 'unknown'}`);
       console.error(`- Stack Trace: ${err?.stack || 'unknown'}`);
 
-      if (!err?.message?.includes('registered')) {
-        this.status.messagesFailed++;
-        addToHistory(phoneNumber, message, 'Failed', err?.message || 'Send error');
-      }
+      this.status.messagesFailed++;
+      addToHistory(phoneNumber, message, 'Failed', err?.message || 'Send error');
       throw err;
     }
   }
