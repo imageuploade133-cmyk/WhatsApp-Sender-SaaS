@@ -3,7 +3,7 @@ import multer from 'multer';
 import { whatsappService } from '../services/whatsappService';
 import { bulkService } from '../services/bulkService';
 import { contactsService } from '../services/contactsService';
-import { getHistory } from '../services/historyService';
+import { getHistory, addToHistory } from '../services/historyService';
 
 const router = Router();
 
@@ -16,13 +16,14 @@ const upload = multer({
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@test.com';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
 
-// Session token generated on server start
-const currentSessionToken = 'session_' + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+// Session storage map (token -> email) for multi-user isolation
+export const activeSessions = new Map<string, string>();
 
 // Middleware to authenticate admin requests
 export function authMiddleware(req: Request, res: Response, next: NextFunction) {
   const token = req.cookies?.session;
-  if (token && token === currentSessionToken) {
+  if (token && activeSessions.has(token)) {
+    (req as any).userEmail = activeSessions.get(token);
     return next();
   }
   return res.status(401).json({ error: 'Unauthorized: Admin authentication required' });
@@ -40,8 +41,11 @@ router.post('/auth/login', (req: Request, res: Response) => {
   }
 
   if (email === ADMIN_EMAIL && password === ADMIN_PASSWORD) {
-    // Set a secure, HTTP-only cookie
-    res.cookie('session', currentSessionToken, {
+    // Generate a secure, unique HTTP-only session token per login for multi-user isolation
+    const uniqueToken = 'session_' + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+    activeSessions.set(uniqueToken, email);
+
+    res.cookie('session', uniqueToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
@@ -54,14 +58,19 @@ router.post('/auth/login', (req: Request, res: Response) => {
 });
 
 router.post('/auth/logout', (req: Request, res: Response) => {
+  const token = req.cookies?.session;
+  if (token) {
+    activeSessions.delete(token);
+  }
   res.clearCookie('session');
   return res.json({ success: true });
 });
 
 router.get('/auth/me', (req: Request, res: Response) => {
   const token = req.cookies?.session;
-  if (token && token === currentSessionToken) {
-    return res.json({ authenticated: true, user: { email: ADMIN_EMAIL } });
+  if (token && activeSessions.has(token)) {
+    const email = activeSessions.get(token);
+    return res.json({ authenticated: true, user: { email } });
   }
   return res.json({ authenticated: false });
 });
@@ -84,8 +93,8 @@ router.get('/health', (req: Request, res: Response) => {
 
 router.post('/whatsapp/connect', authMiddleware, async (req: Request, res: Response) => {
   try {
-    // connect() runs asynchronously and transitions status
-    await whatsappService.connect();
+    const email = (req as any).userEmail;
+    await whatsappService.connect(email);
     return res.json({ success: true, message: 'Connection process initiated' });
   } catch (error: any) {
     return res.status(500).json({ error: error?.message || 'Failed to initiate connection' });
@@ -94,7 +103,8 @@ router.post('/whatsapp/connect', authMiddleware, async (req: Request, res: Respo
 
 router.post('/whatsapp/disconnect', authMiddleware, async (req: Request, res: Response) => {
   try {
-    await whatsappService.disconnect();
+    const email = (req as any).userEmail;
+    await whatsappService.disconnect(email);
     return res.json({ success: true, message: 'Successfully disconnected and cleared session' });
   } catch (error: any) {
     return res.status(500).json({ error: error?.message || 'Failed to disconnect' });
@@ -102,7 +112,8 @@ router.post('/whatsapp/disconnect', authMiddleware, async (req: Request, res: Re
 });
 
 router.get('/whatsapp/status', authMiddleware, (req: Request, res: Response) => {
-  const status = whatsappService.getStatus();
+  const email = (req as any).userEmail;
+  const status = whatsappService.getStatus(email);
   const bulkStatus = bulkService.getStatus();
   return res.json({
     ...status,
@@ -122,7 +133,8 @@ router.post('/whatsapp/send', authMiddleware, async (req: Request, res: Response
   }
 
   try {
-    await whatsappService.sendMessage(phoneNumber, message);
+    const email = (req as any).userEmail;
+    await whatsappService.sendMessage(phoneNumber, message, email);
     return res.json({ success: true, message: 'Message sent successfully' });
   } catch (error: any) {
     return res.status(400).json({ error: error?.message || 'Failed to send message' });
@@ -246,6 +258,43 @@ router.post('/contacts/clear', authMiddleware, (req: Request, res: Response) => 
 router.get('/history', authMiddleware, (req: Request, res: Response) => {
   const list = getHistory();
   return res.json({ success: true, history: list });
+});
+
+// Evolution API webhook endpoint (unauthenticated for external service callback)
+router.post('/whatsapp/webhook', (req: Request, res: Response) => {
+  try {
+    const { event, instance, data } = req.body;
+    const eventName = (event || '').toUpperCase();
+    console.log(`[Evolution Webhook] Received event "${eventName}" for instance: ${instance}`);
+
+    if (eventName === 'CONNECTION_UPDATE') {
+      console.log(`[Evolution Webhook] Connection state updated for ${instance}: ${data?.state}`);
+      whatsappService.updateStatusFromWebhook(instance, data?.state);
+    }
+
+    if (eventName === 'MESSAGES_UPSERT') {
+      const isFromMe = data?.key?.fromMe;
+      const body = data?.message?.conversation || data?.message?.extendedTextMessage?.text;
+      const sender = data?.key?.remoteJid?.split('@')[0];
+      if (body && !isFromMe) {
+        console.log(`[Evolution Webhook] Incoming message from ${sender}: "${body}"`);
+        addToHistory(sender, body, 'Received');
+      }
+    }
+
+    if (eventName === 'SEND_MESSAGE') {
+      const body = data?.message?.conversation || data?.message?.extendedTextMessage?.text;
+      const recipient = data?.key?.remoteJid?.split('@')[0];
+      if (body) {
+        console.log(`[Evolution Webhook] Outgoing message delivered to ${recipient}: "${body}" (Logged via sendMessage)`);
+      }
+    }
+
+    return res.json({ success: true });
+  } catch (err: any) {
+    console.error(`[Evolution Webhook] Error processing event:`, err);
+    return res.status(500).json({ error: err?.message || 'Webhook processing failed' });
+  }
 });
 
 export default router;
