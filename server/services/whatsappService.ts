@@ -215,6 +215,7 @@ class WhatsAppService {
           dataPath: authPath,
           clientId: 'whatsapp-session',
         }),
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         puppeteer: {
           headless: true,
           args: [
@@ -240,7 +241,7 @@ class WhatsAppService {
       });
 
       this.client.on('ready', () => {
-        console.log('[WhatsAppService] Client is ready!');
+        console.log('[WhatsAppService] Client is ready! WhatsApp Connected.');
         this.status.status = 'Connected';
         this.status.qrCodeUrl = null;
         this.status.error = null;
@@ -255,7 +256,7 @@ class WhatsAppService {
       });
 
       this.client.on('authenticated', () => {
-        console.log('[WhatsAppService] Authenticated successfully.');
+        console.log('[WhatsAppService] Authenticated successfully. WhatsApp paired!');
       });
 
       this.client.on('auth_failure', (msg) => {
