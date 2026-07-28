@@ -17,16 +17,40 @@ export interface WhatsAppStatus {
   error: string | null;
 }
 
-// Render Free Compatibility: store LocalAuth sessions inside current working directory
-const authPath = path.join(process.cwd(), '.auth');
+// --- Dynamic Platform-Agnostic Auth Storage Resolver ---
+// Scans standard mount points for persistent volumes (for both Render paid volumes and Railway volumes).
+// Falls back gracefully to local process directory if no persistent mount is detected.
+const potentialPersistentPaths = [
+  '/.auth',
+  '/data/.auth',
+  '/persistent/.auth',
+  '/volume/.auth',
+];
 
-// Ensure directory exists inside project cwd
+let authPath = path.join(process.cwd(), '.auth');
+
+for (const p of potentialPersistentPaths) {
+  try {
+    const parentDir = path.dirname(p);
+    if (fs.existsSync(parentDir)) {
+      // Ensure the directory is writable by making it
+      fs.mkdirSync(p, { recursive: true });
+      authPath = p;
+      console.log(`[WhatsAppService] Dynamic Storage: Selected persistent path for LocalAuth: ${authPath}`);
+      break;
+    }
+  } catch (err) {
+    // If permission or access fails, fall through to check next potential path
+  }
+}
+
+// Ensure the resolved directory exists
 if (!fs.existsSync(authPath)) {
   try {
     fs.mkdirSync(authPath, { recursive: true });
-    console.log(`[WhatsAppService] Created Local auth directory at: ${authPath}`);
+    console.log(`[WhatsAppService] Dynamic Storage: Created local auth directory at: ${authPath}`);
   } catch (err) {
-    console.error(`[WhatsAppService] Failed to create auth directory at ${authPath}:`, err);
+    console.error(`[WhatsAppService] Dynamic Storage: Failed to create auth directory at ${authPath}:`, err);
   }
 }
 
@@ -232,6 +256,12 @@ class WhatsAppService {
           dataPath: authPath,
           clientId: 'whatsapp-session',
         }),
+        // Fix for "LOADING SCREEN 100% stuck" and pairing issues on new WhatsApp Web versions:
+        // Use wppconnect-team's stable, up-to-date WA Web Cache client
+        webVersionCache: {
+          type: 'remote',
+          remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
+        },
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         puppeteer: {
           headless: true,
