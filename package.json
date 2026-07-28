@@ -23,7 +23,7 @@
     "react": "^18",
     "react-dom": "^18",
     "react-hook-form": "^7.83.0",
-    "whatsapp-web.js": "github:timothydillan/whatsapp-web.js#fix/duplicate-events-and-bindings",
+    "whatsapp-web.js": "github:Vgshots/whatsapp-web.js-my-enhancements#my-feature",
     "xlsx": "^0.18.5",
     "zod": "^4.4.3"
   },
