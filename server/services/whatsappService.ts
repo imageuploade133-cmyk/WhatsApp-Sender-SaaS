@@ -30,6 +30,23 @@ if (!fs.existsSync(authPath)) {
   }
 }
 
+// Memory-safe promise timeout helper to prevent hanging forever
+async function withTimeout<T>(promise: Promise<T>, ms = 15000): Promise<T> {
+  let timeoutId: NodeJS.Timeout;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`Timeout: Action exceeded ${ms / 1000}s threshold`));
+    }, ms);
+  });
+  return Promise.race([
+    promise.then((res) => {
+      clearTimeout(timeoutId);
+      return res;
+    }),
+    timeoutPromise,
+  ]);
+}
+
 // Helper to recursively find Chrome/Chromium executable binary inside a directory
 function findChromeExecutable(dirPath: string): string | null {
   if (!fs.existsSync(dirPath)) return null;
@@ -325,34 +342,60 @@ class WhatsAppService {
   }
 
   public async sendMessage(phoneNumber: string, message: string): Promise<void> {
+    const startTime = Date.now();
+    console.log(`[WhatsAppService] === Starting Send Message Process ===`);
+    console.log(`- Original phone: "${phoneNumber}"`);
+
     if (!this.client || this.status.status !== 'Connected') {
       throw new Error('WhatsApp is not connected');
     }
 
     // Standard formatting: strip non-digits, ensure @c.us suffix
     const cleanNumber = phoneNumber.replace(/\D/g, '');
+    console.log(`- Normalized phone: "${cleanNumber}"`);
     if (!cleanNumber) {
       throw new Error(`Invalid phone number format: ${phoneNumber}`);
     }
 
     const jid = `${cleanNumber}@c.us`;
+    console.log(`- Final Jid: "${jid}"`);
 
     try {
-      console.log(`[WhatsAppService] Validating registered status for: ${jid}`);
-      const isRegistered = await this.client.isRegisteredUser(jid);
+      console.log(`[WhatsAppService] Checking registration on WhatsApp for: ${jid}...`);
+      const checkStart = Date.now();
+
+      const isRegistered = await withTimeout(
+        this.client.isRegisteredUser(jid),
+        15000
+      );
+
+      console.log(`[WhatsAppService] Registration result: ${isRegistered} (took ${Date.now() - checkStart}ms)`);
+
       if (!isRegistered) {
         this.status.messagesFailed++;
         addToHistory(phoneNumber, message, 'Failed', 'Not a registered WhatsApp number');
-        throw new Error(`The number ${phoneNumber} is not registered on WhatsApp`);
+        throw new Error(`The phone number ${phoneNumber} is not registered on WhatsApp`);
       }
 
-      console.log(`[WhatsAppService] Sending message to ${jid}...`);
-      await this.client.sendMessage(jid, message);
+      console.log(`[WhatsAppService] Sending message to ${jid} via whatsapp-web.js...`);
+      const sendStart = Date.now();
+
+      const response = await withTimeout(
+        this.client.sendMessage(jid, message),
+        15000
+      );
+
+      console.log(`[WhatsAppService] Message sent successfully! Message JID ID: ${response?.id?.id || 'unknown'} (took ${Date.now() - sendStart}ms)`);
       this.status.messagesSentToday++;
       addToHistory(phoneNumber, message, 'Sent');
+      console.log(`[WhatsAppService] === Send Message Process Finished (Total time: ${Date.now() - startTime}ms) ===`);
     } catch (err: any) {
-      console.error(`[WhatsAppService] Send message failed to ${phoneNumber}:`, err);
-      if (!err.message.includes('registered')) {
+      console.error(`[WhatsAppService] Send message failed to ${phoneNumber}.`);
+      console.error(`- Error Name: ${err?.name || 'unknown'}`);
+      console.error(`- Error Message: ${err?.message || 'unknown'}`);
+      console.error(`- Stack Trace: ${err?.stack || 'unknown'}`);
+
+      if (!err?.message?.includes('registered')) {
         this.status.messagesFailed++;
         addToHistory(phoneNumber, message, 'Failed', err?.message || 'Send error');
       }
