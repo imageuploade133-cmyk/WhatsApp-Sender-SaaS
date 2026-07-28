@@ -2,6 +2,7 @@ import { Client, LocalAuth } from 'whatsapp-web.js';
 import qrcode from 'qrcode';
 import fs from 'fs';
 import path from 'path';
+import { execSync } from 'child_process';
 import { addToHistory } from './historyService';
 
 export interface WhatsAppStatus {
@@ -125,26 +126,64 @@ class WhatsAppService {
       console.log('- Installed Puppeteer version: Unknown (could not load package.json)');
     }
 
-    let executablePath: string | undefined = undefined;
-
-    // Determine the browser installation dynamically via recursive caching audit
-    const searchDirs = [
-      process.env.PUPPETEER_CACHE_DIR,
-      path.join(process.cwd(), '.cache', 'puppeteer'),
-    ].filter(Boolean) as string[];
-
-    console.log('[WhatsAppService] Auditing cache directories for downloaded Chrome binaries...');
-    for (const dir of searchDirs) {
-      console.log(`- Searching in: ${dir}`);
-      const found = findChromeExecutable(dir);
-      if (found) {
-        executablePath = found;
-        console.log(`- Dynamic Browser Check: SUCCESS! Located downloaded Chrome binary at: ${executablePath}`);
-        break;
+    // Run system-level diagnostics and lookup binaries (especially for Railway Nixpacks)
+    console.log('[WhatsAppService] --- Railway / System Browser Commands ---');
+    const cmds = [
+      'which chromium',
+      'which chromium-browser',
+      'which google-chrome',
+      'chromium --version',
+    ];
+    for (const c of cmds) {
+      try {
+        const out = execSync(c, { encoding: 'utf-8' }).trim();
+        console.log(`$ ${c} => ${out}`);
+      } catch (err: any) {
+        console.log(`$ ${c} => Not found (exit code ${err?.status || 'unknown'})`);
       }
     }
 
-    // Default system fallback paths
+    let executablePath: string | undefined = undefined;
+
+    // 1. Try finding chromium via "which chromium" or "which chromium-browser" dynamically (Railway)
+    try {
+      const resolved = execSync('which chromium', { encoding: 'utf-8' }).trim();
+      if (resolved && fs.existsSync(resolved)) {
+        executablePath = resolved;
+        console.log(`- Dynamic Browser Check: SUCCESS! Located system chromium via 'which chromium': ${executablePath}`);
+      }
+    } catch {}
+
+    if (!executablePath) {
+      try {
+        const resolved = execSync('which chromium-browser', { encoding: 'utf-8' }).trim();
+        if (resolved && fs.existsSync(resolved)) {
+          executablePath = resolved;
+          console.log(`- Dynamic Browser Check: SUCCESS! Located system chromium via 'which chromium-browser': ${executablePath}`);
+        }
+      } catch {}
+    }
+
+    // 2. Fallback: Determine browser installation dynamically via recursive caching audit (Render)
+    if (!executablePath) {
+      const searchDirs = [
+        process.env.PUPPETEER_CACHE_DIR,
+        path.join(process.cwd(), '.cache', 'puppeteer'),
+      ].filter(Boolean) as string[];
+
+      console.log('[WhatsAppService] Auditing cache directories for downloaded Chrome binaries...');
+      for (const dir of searchDirs) {
+        console.log(`- Searching in: ${dir}`);
+        const found = findChromeExecutable(dir);
+        if (found) {
+          executablePath = found;
+          console.log(`- Dynamic Browser Check: SUCCESS! Located downloaded Chrome binary at: ${executablePath}`);
+          break;
+        }
+      }
+    }
+
+    // 3. Fallback: Default standard system paths
     if (!executablePath) {
       const potentialPaths = [
         process.env.PUPPETEER_EXECUTABLE_PATH,
