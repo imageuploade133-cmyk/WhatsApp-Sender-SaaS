@@ -1,29 +1,40 @@
-# WhatsApp Sender SaaS
+# WhatsApp Sender SaaS (Migrated to Evolution API + Baileys)
 
-A complete production-quality, single-container WhatsApp Sender SaaS application that allows users to link their personal WhatsApp account by scanning a QR code and dispatch single or bulk WhatsApp messages. Built cleanly inside a single unified repository and deployable as a single Render Web Service.
+A complete, production-grade, database-free WhatsApp Sender SaaS application that allows users to link their personal WhatsApp accounts and dispatch single or bulk WhatsApp messages.
 
-## Features
-
-- **Local Administrator Login**: Simple, secure cookie-based auth using `ADMIN_EMAIL` and `ADMIN_PASSWORD` env variables.
-- **Dynamic Connection Status**: Real-time status reporting (`Disconnected`, `Generating QR`, `Waiting for Scan`, `Connected`, `Reconnecting`, `Error`).
-- **QR Code Scanning**: Seamless Base64 data URL rendering for pairing with automatic detection.
-- **Persistent Session Storage**: Utilizing `whatsapp-web.js` `LocalAuth` stored under `.auth/` directory.
-- **Single Messaging Form**: Inputs with full front-to-back Zod validation and delivery feedback.
-- **Bulk Messaging Queue**: Sequential dispatching (non-simultaneous) with random delays (default 5–10s), live progress tracking, and controls to **Pause**, **Resume**, or **Cancel** active queues.
-- **Contact Database Management**: File uploads (CSV and Excel `.xlsx` spreadsheets) and manual entries in a searchable and clearable database.
-- **Delivery Log History**: An in-memory, real-time dispatch log tracking recipient, text, timestamp, delivery status, and errors.
-- **100% Database-Free**: Clean state design built on node memory buffers, standard streams, and persistent session files.
+We have permanently **migrated away from `whatsapp-web.js` + Puppeteer to the RESTful Evolution API (powered by Baileys)**. This resolves all upstream production issues, including unstable browser environments, hanging dispatches, lost sessions on restart, and high CPU/RAM resource spikes.
 
 ---
 
-## Tech Stack
+## 🚀 Migrated Architecture
 
-- **Frontend**: Next.js 14 (App Router), TypeScript, Tailwind CSS, Lucide Icons, React Hook Form, Zod.
-- **Backend Services**: Express.js (custom integrated Next.js server), whatsapp-web.js, Puppeteer, Multer, CSV-Parser, XLSX.
+The application is deployed using a decoupled, highly stable production-ready architecture:
+
+```
+[ Next.js + Tailwind Frontend ]
+              ↓
+  (HTTP / API endpoints)
+              ↓
+[ Express Backend (Our App) ]  ──(Persistent Disk)──→ [ /.auth/active-sessions.json ]
+              ↓
+  (REST API + API Key Auth)
+              ↓
+[ Evolution API Server ] (Separate Service)
+              ↓
+         [ Baileys ]
+              ↓
+         [ WhatsApp ]
+```
+
+### Key Architectural Benefits:
+- **No Puppeteer / No Chrome**: Zero browser-automation dependency. Eliminates container crashes, out-of-memory issues, and complicated Chrome binary installation steps.
+- **Multi-User SaaS Session Isolation**: Every user gets their own dedicated, isolated Evolution API Baileys instance named `instance-[sanitized-email]`. No shared sessions, no security leaks, and complete privacy.
+- **Reliable Instance Persistence**: All WhatsApp sessions and pairings are managed and stored securely by the Evolution API server's PostgreSQL/Redis database, surviving restarts effortlessly.
+- **Instant Connection Sync**: Employs a case-insensitive unauthenticated webhook receiver at `/api/whatsapp/webhook` to handle instant delivery updates, status changes, and incoming messages from the Evolution API.
 
 ---
 
-## Folder Structure
+## 📁 Folder Structure
 
 ```
 ├── app/                  # Next.js App Router (Views, Layouts, Pages)
@@ -35,87 +46,90 @@ A complete production-quality, single-container WhatsApp Sender SaaS application
 ├── server/               # Custom Express server
 │   ├── index.ts          # Bootstrapping Express & Next.js handler
 │   ├── routes/
-│   │   └── api.ts        # Fully integrated backend REST API endpoints
+│   │   └── api.ts        # Fully integrated backend REST API endpoints (including Webhooks)
 │   └── services/
-│     ├── whatsappService.ts  # WhatsApp client state, event, and browser hook
+│     ├── whatsappService.ts  # Evolution API client wrapper & state sync
 │     ├── bulkService.ts      # Non-blocking sequential job dispatcher
 │     ├── contactsService.ts  # CSV/Excel parsers and contact cataloging
 │     └── historyService.ts   # Memory buffer logs for sent/failed history
-├── .auth/                # (Auto-generated) Secure LocalAuth session files
-├── render.yaml           # Deployment blueprint config for Render Web Services
-├── package.json          # Dependency and custom script listings
-└── tsconfig.json         # Strict TypeScript settings
+├── .auth/                # (Auto-generated) Secure persistent session mappings
+├── render.yaml           # Deployment blueprint config for Render
+├── package.json          # Dependency listings
+└── tsconfig.json         # TypeScript settings
 ```
 
 ---
 
-## Environment Variables
+## 🔑 Environment Variables
 
-Configure these variables locally in a `.env` file or within the Render dashboard:
+Configure these variables locally in your `.env` file or in your cloud provider's dashboard:
 
-| Variable | Description | Default / Example |
+| Variable | Description | Example / Default |
 | :--- | :--- | :--- |
-| `ADMIN_EMAIL` | Administrator authorization username | `admin@test.com` |
+| `ADMIN_EMAIL` | Administrator authorization username / login email | `admin@test.com` |
 | `ADMIN_PASSWORD` | Administrator authorization password | `admin123` |
-| `PORT` | The port the application binds to | `3000` |
-| `PUPPETEER_EXECUTABLE_PATH` | Path to google-chrome (optional fallback) | `/usr/bin/google-chrome` |
+| `PORT` | The port our Express application binds to | `3000` |
+| `NODE_ENV` | Mode of operation | `production` |
+| `EVOLUTION_API_URL` | **URL of your deployed Evolution API service** | `https://your-evolution-api.up.railway.app` |
+| `EVOLUTION_API_KEY` | **Global authentication token of your Evolution API service** | `your-secret-global-api-key` |
 
 ---
 
-## Local Development Guide
+## 🚂 Railway & Render Deployment Guide
 
-### 1. Prerequisites
-Ensure you have Node.js (v18 or higher) and npm installed:
-```bash
-node -v
-npm -v
-```
+To deploy this commercial SaaS, you will deploy **two separate services** in the same project:
 
-### 2. Setup Dependencies
-Clone the repository, then install packages:
+### Step 1: Deploy Evolution API Server
+We recommend using the official, stable release of the Evolution API.
+1. Deploy the official Evolution API image (`evolutionapi/evolution-api:latest`) as a service on **Railway** or **Render**.
+2. Provision a **PostgreSQL** database and **Redis** cache, then link them to your Evolution API service.
+3. Configure the following variables on your Evolution API service:
+   - `DATABASE_ENABLED=true`
+   - `DATABASE_CONNECTION_URI=postgresql://user:pass@host:port/dbname`
+   - `CACHE_REDIS_ENABLED=true`
+   - `CACHE_REDIS_URI=redis://host:port`
+   - `AUTHENTICATION_API_KEY=your-secret-global-api-key`
+   - `WEBHOOK_GLOBAL_ENABLED=true`
+   - `WEBHOOK_GLOBAL_URL=https://your-saas-app.up.railway.app/api/whatsapp/webhook`
+
+### Step 2: Deploy this SaaS Application
+1. Create a new service and connect this GitHub repository.
+2. Railway/Render will automatically detect the build configurations via `nixpacks.toml` or `package.json`.
+3. Configure the environment variables (listed in the table above), pointing `EVOLUTION_API_URL` to your Step 1 service URL.
+4. Mount a persistent disk at `/.auth` to ensure the session token-to-email mapping (`/.auth/active-sessions.json`) is securely persisted across server restarts.
+
+---
+
+## 🛠️ Local Development
+
+### 1. Setup Dependencies
 ```bash
 npm install
 ```
 
+### 2. Configure Environment
+Create a `.env` file in the root directory:
+```env
+ADMIN_EMAIL=admin@test.com
+ADMIN_PASSWORD=admin123
+PORT=3000
+EVOLUTION_API_URL=http://localhost:8080
+EVOLUTION_API_KEY=your-secret-global-api-key
+```
+
 ### 3. Running Locally
-Run the Custom Express + Next.js server in development mode:
+Run the Express + Next.js server in development mode:
 ```bash
 npm run dev
 ```
-Open [http://localhost:3000](http://localhost:3000) in your web browser.
-
-- Sign in using:
-  - **Email**: `admin@test.com` (or your configured `ADMIN_EMAIL`)
-  - **Password**: `admin123` (or your configured `ADMIN_PASSWORD`)
+Open [http://localhost:3000](http://localhost:3000) and login with your admin email.
 
 ---
 
-## Production Deployment on Render
+## ⚡ API Endpoint Mappings & Webhooks
 
-This repository includes a `render.yaml` configuration file allowing you to deploy the entire SaaS in minutes.
-
-### Standard Setup
-
-1. Create a new **Web Service** on [Render](https://render.com).
-2. Connect your GitHub repository.
-3. Configure the settings:
-   - **Environment**: `Node`
-   - **Build Command**: `npm install && npm run build`
-   - **Start Command**: `npm start`
-4. Add the **Environment Variables**:
-   - `ADMIN_EMAIL`
-   - `ADMIN_PASSWORD`
-   - `PORT` (set to `3000`)
-5. Deploy!
-
-### Note on Persistent Sessions
-To prevent QR codes from expiring or being lost when Render restarts, the `render.yaml` template defines a persistent Disk mount at `/.auth` which retains your WhatsApp credentials across code deployments and restarts.
-
----
-
-## Error Handling & Resiliency
-
-- **Automatic Reconnection**: If connection to WhatsApp web times out, the server attempts state recovery.
-- **Browser Crashes**: Handled cleanly without killing the parent Node/Express process.
-- **Invalid Number Verification**: Prior to sending, `isRegisteredUser()` is called on whatsapp-web.js to protect sending limits and prevent message delivery blocks.
-- **Duplicates Cleaner**: Uploaded contact sheets automatically strip non-digits and eliminate overlapping rows.
+- **Connect**: `POST /api/whatsapp/connect` (Creates Baileys instance dynamically and generates pairing QR)
+- **Disconnect**: `POST /api/whatsapp/disconnect` (Deletes instance / logs out)
+- **Status Check**: `GET /api/whatsapp/status` (Polls real-time connection info)
+- **Message Send**: `POST /api/whatsapp/send` (Dispatches message via Baileys instantly)
+- **Webhook Endpoint**: `POST /api/whatsapp/webhook` (Processes realtime event callbacks: `CONNECTION_UPDATE`, `MESSAGES_UPSERT`, `SEND_MESSAGE`)
