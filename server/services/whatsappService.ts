@@ -1,8 +1,4 @@
-import { Client, LocalAuth } from 'whatsapp-web.js';
 import qrcode from 'qrcode';
-import fs from 'fs';
-import path from 'path';
-import { execSync } from 'child_process';
 import { addToHistory } from './historyService';
 
 export interface WhatsAppStatus {
@@ -17,435 +13,366 @@ export interface WhatsAppStatus {
   error: string | null;
 }
 
-// --- Dynamic Platform-Agnostic Auth Storage Resolver ---
-const potentialPersistentPaths = [
-  '/.auth',
-  '/data/.auth',
-  '/persistent/.auth',
-  '/volume/.auth',
-];
+const url = process.env.EVOLUTION_API_URL || 'http://localhost:8080';
+const apiKey = process.env.EVOLUTION_API_KEY || 'global-api-token-here';
 
-let authPath = path.join(process.cwd(), '.auth');
-
-for (const p of potentialPersistentPaths) {
-  try {
-    const parentDir = path.dirname(p);
-    if (fs.existsSync(parentDir)) {
-      fs.mkdirSync(p, { recursive: true });
-      authPath = p;
-      console.log(`[WhatsAppService] Dynamic Storage: Selected persistent path for LocalAuth: ${authPath}`);
-      break;
-    }
-  } catch (err) {
-    // Fail-safe
+export function getInstanceName(email?: string): string {
+  const baseEmail = email || process.env.ADMIN_EMAIL || 'admin@test.com';
+  if (baseEmail.startsWith('instance-')) {
+    return baseEmail;
   }
-}
-
-// Ensure resolved directory exists
-if (!fs.existsSync(authPath)) {
-  try {
-    fs.mkdirSync(authPath, { recursive: true });
-    console.log(`[WhatsAppService] Dynamic Storage: Created local auth directory at: ${authPath}`);
-  } catch (err) {
-    console.error(`[WhatsAppService] Dynamic Storage: Failed to create auth directory at ${authPath}:`, err);
-  }
-}
-
-// Memory-safe promise timeout helper to prevent hanging forever (increased to 30s threshold)
-async function withTimeout<T>(promise: Promise<T>, ms = 30000): Promise<T> {
-  let timeoutId: NodeJS.Timeout;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(() => {
-      reject(new Error(`Timeout: Action exceeded ${ms / 1000}s threshold`));
-    }, ms);
-  });
-  return Promise.race([
-    promise.then((res) => {
-      clearTimeout(timeoutId);
-      return res;
-    }),
-    timeoutPromise,
-  ]);
-}
-
-// Helper to recursively find Chrome/Chromium executable binary inside a directory
-function findChromeExecutable(dirPath: string): string | null {
-  if (!fs.existsSync(dirPath)) return null;
-
-  try {
-    const files = fs.readdirSync(dirPath);
-    for (const file of files) {
-      const fullPath = path.join(dirPath, file);
-      let stat;
-      try {
-        stat = fs.statSync(fullPath);
-      } catch {
-        continue;
-      }
-
-      if (stat.isDirectory()) {
-        const found = findChromeExecutable(fullPath);
-        if (found) return found;
-      } else if (file === 'chrome' || file === 'chrome.exe') {
-        try {
-          fs.accessSync(fullPath, fs.constants.X_OK);
-        } catch {
-          try {
-            fs.chmodSync(fullPath, 0o755);
-            console.log(`[WhatsAppService] Set executable permissions (0755) on: ${fullPath}`);
-          } catch (chmodErr) {
-            console.warn(`[WhatsAppService] Warning: Could not chmod executable: ${fullPath}`, chmodErr);
-          }
-        }
-        return fullPath;
-      }
-    }
-  } catch (e) {
-    console.error(`[WhatsAppService] Error scanning directory ${dirPath}:`, e);
-  }
-  return null;
+  return 'instance-' + baseEmail.toLowerCase().replace(/[^a-zA-Z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
 }
 
 class WhatsAppService {
-  private client: Client | null = null;
-  private status: WhatsAppStatus = {
-    status: 'Disconnected',
-    phoneNumber: null,
-    whatsappName: null,
-    platform: null,
-    messagesSentToday: 0,
-    messagesFailed: 0,
-    connectedSince: null,
-    qrCodeUrl: null,
-    error: null,
-  };
+  private statuses: Record<string, WhatsAppStatus> = {};
 
   constructor() {
-    console.log('[WhatsAppService] Starting up and auto-connecting WhatsApp client...');
-    this.connect().catch((err) => {
-      console.error('[WhatsAppService] Initial auto-connect failed:', err?.message || err);
-    });
+    console.log('[WhatsAppService] Starting up Evolution API service wrapper...');
+    this.startStatusPolling();
   }
 
-  public getStatus(): WhatsAppStatus {
-    return { ...this.status };
+  private getOrCreateStatus(instanceName: string): WhatsAppStatus {
+    if (!this.statuses[instanceName]) {
+      this.statuses[instanceName] = {
+        status: 'Disconnected',
+        phoneNumber: null,
+        whatsappName: null,
+        platform: 'Baileys',
+        messagesSentToday: 0,
+        messagesFailed: 0,
+        connectedSince: null,
+        qrCodeUrl: null,
+        error: null,
+      };
+    }
+    return this.statuses[instanceName];
   }
 
-  public async connect(): Promise<void> {
-    if (this.client) {
-      if (
-        this.status.status === 'Connected' ||
-        this.status.status === 'Waiting for Scan' ||
-        this.status.status === 'Generating QR'
-      ) {
-        console.log(`[WhatsAppService] Connection already in progress or connected. Current status: ${this.status.status}`);
-        return;
-      }
-      await this.cleanup();
-    }
+  public getStatus(email?: string): WhatsAppStatus {
+    const instanceName = getInstanceName(email);
+    return { ...this.getOrCreateStatus(instanceName) };
+  }
 
-    this.status.status = 'Generating QR';
-    this.status.error = null;
-    this.status.qrCodeUrl = null;
+  public async connect(email?: string): Promise<void> {
+    const instanceName = getInstanceName(email);
+    const status = this.getOrCreateStatus(instanceName);
 
-    // --- Startup Diagnostics ---
-    console.log('[WhatsAppService] --- Startup Diagnostics ---');
-    console.log(`- NODE_ENV: ${process.env.NODE_ENV}`);
-    console.log(`- Configured authPath: ${authPath}`);
-    console.log(`- Target session path: ${path.join(authPath, 'session-whatsapp-session')}`);
-    console.log(`- PUPPETEER_CACHE_DIR: ${process.env.PUPPETEER_CACHE_DIR}`);
+    console.log(`[WhatsAppService] Connect initiated for instance: ${instanceName}`);
+    status.status = 'Generating QR';
+    status.error = null;
+    status.qrCodeUrl = null;
 
     try {
-      const puppeteerPkg = require('puppeteer/package.json');
-      console.log(`- Installed Puppeteer version: ${puppeteerPkg.version}`);
-    } catch {
-      console.log('- Installed Puppeteer version: Unknown');
-    }
-
-    // Run diagnostics
-    console.log('[WhatsAppService] --- Railway / System Browser Commands ---');
-    const cmds = [
-      'which chromium',
-      'which chromium-browser',
-      'which google-chrome',
-      'chromium --version',
-    ];
-    for (const c of cmds) {
-      try {
-        const out = execSync(c, { encoding: 'utf-8' }).trim();
-        console.log(`$ ${c} => ${out}`);
-      } catch (err: any) {
-        console.log(`$ ${c} => Not found (exit code ${err?.status || 'unknown'})`);
+      // 1. Check if instance exists in Evolution API
+      const exists = await this.checkInstanceExists(instanceName);
+      if (!exists) {
+        console.log(`[WhatsAppService] Creating new instance: ${instanceName}`);
+        await this.createInstance(instanceName);
       }
-    }
 
-    let executablePath: string | undefined = undefined;
-
-    // 1. System Chromium path
-    try {
-      const resolved = execSync('which chromium', { encoding: 'utf-8' }).trim();
-      if (resolved && fs.existsSync(resolved)) {
-        executablePath = resolved;
-        console.log(`- Dynamic Browser Check: SUCCESS! Located system chromium: ${executablePath}`);
-      }
-    } catch {}
-
-    if (!executablePath) {
-      try {
-        const resolved = execSync('which chromium-browser', { encoding: 'utf-8' }).trim();
-        if (resolved && fs.existsSync(resolved)) {
-          executablePath = resolved;
-          console.log(`- Dynamic Browser Check: SUCCESS! Located system chromium-browser: ${executablePath}`);
-        }
-      } catch {}
-    }
-
-    // 2. Fallback local cache
-    if (!executablePath) {
-      const searchDirs = [
-        process.env.PUPPETEER_CACHE_DIR,
-        path.join(process.cwd(), '.cache', 'puppeteer'),
-      ].filter(Boolean) as string[];
-
-      console.log('[WhatsAppService] Auditing cache directories for downloaded Chrome binaries...');
-      for (const dir of searchDirs) {
-        const found = findChromeExecutable(dir);
-        if (found) {
-          executablePath = found;
-          console.log(`- Dynamic Browser Check: SUCCESS! Located downloaded Chrome binary at: ${executablePath}`);
-          break;
+      // 2. Fetch the QR code or check state
+      const qrData = await this.getConnectQR(instanceName);
+      if (qrData && qrData.code) {
+        status.status = 'Waiting for Scan';
+        status.qrCodeUrl = await qrcode.toDataURL(qrData.code);
+        console.log(`[WhatsAppService] Fresh QR code generated successfully.`);
+      } else {
+        // If no QR is returned, check if already connected
+        const connState = await this.getConnectionState(instanceName);
+        if (connState === 'open') {
+          status.status = 'Connected';
+          await this.syncInstanceStatus(instanceName);
+        } else {
+          status.status = 'Error';
+          status.error = 'Failed to retrieve connection QR Code';
         }
       }
+    } catch (err: any) {
+      status.status = 'Error';
+      status.error = err?.message || 'Failed to connect to Evolution API';
+      console.error(`[WhatsAppService] Connect error for ${instanceName}:`, err);
     }
+  }
 
-    // 3. Fallback system defaults
-    if (!executablePath) {
-      const potentialPaths = [
-        process.env.PUPPETEER_EXECUTABLE_PATH,
-        '/usr/bin/google-chrome',
-        '/usr/bin/google-chrome-stable',
-        '/usr/bin/chromium',
-        '/usr/bin/chromium-browser',
-      ].filter(Boolean) as string[];
-
-      for (const p of potentialPaths) {
-        if (fs.existsSync(p)) {
-          executablePath = p;
-          console.log(`- Dynamic Browser Check: Found fallback system binary on disk: ${p}`);
-          break;
-        }
+  public updateStatusFromWebhook(instanceName: string, state: string): void {
+    const status = this.getOrCreateStatus(instanceName);
+    console.log(`[WhatsAppService] Webhook connection update for ${instanceName}: ${state}`);
+    if (state === 'open') {
+      status.status = 'Connected';
+      status.qrCodeUrl = null;
+      status.error = null;
+      if (!status.connectedSince) {
+        status.connectedSince = new Date().toISOString();
       }
-    }
-
-    if (executablePath) {
-      console.log(`[WhatsAppService] Launching browser using resolved path: ${executablePath}`);
+      this.syncInstanceStatus(instanceName).catch(() => {});
+    } else if (state === 'connecting') {
+      status.status = 'Waiting for Scan';
     } else {
-      console.warn('[WhatsAppService] WARNING: No Chrome/Chromium binary found.');
-    }
-
-    try {
-      console.log('[WhatsAppService] Initializing WhatsApp client...');
-      this.client = new Client({
-        authStrategy: new LocalAuth({
-          dataPath: authPath,
-          clientId: 'whatsapp-session',
-        }),
-        webVersionCache: {
-          type: 'remote',
-          remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
-        },
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        puppeteer: {
-          headless: true,
-          args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-gpu',
-          ],
-          executablePath,
-        },
-      });
-
-      // --- Register Event Listeners ---
-      this.client.on('qr', async (qr) => {
-        console.log('[WhatsAppService] QR code received.');
-        this.status.status = 'Waiting for Scan';
-        try {
-          this.status.qrCodeUrl = await qrcode.toDataURL(qr);
-        } catch (err: any) {
-          console.error('[WhatsAppService] Error generating QR code image:', err);
-          this.status.error = 'Failed to generate QR Code image';
-        }
-      });
-
-      this.client.on('ready', () => {
-        console.log('[WhatsAppService] Client is ready! WhatsApp Connected.');
-        this.status.status = 'Connected';
-        this.status.qrCodeUrl = null;
-        this.status.error = null;
-        this.status.connectedSince = new Date().toISOString();
-
-        if (this.client?.info) {
-          const info = this.client.info;
-          this.status.phoneNumber = info.wid?.user || 'Unknown';
-          this.status.whatsappName = info.pushname || 'WhatsApp Device';
-          this.status.platform = info.platform || 'Web Client';
-        }
-      });
-
-      this.client.on('authenticated', () => {
-        console.log('[WhatsAppService] Authenticated successfully. WhatsApp paired!');
-      });
-
-      this.client.on('auth_failure', (msg) => {
-        console.error('[WhatsAppService] Auth failure:', msg);
-        this.status.status = 'Error';
-        this.status.error = msg || 'Authentication failed';
-        this.cleanup();
-      });
-
-      this.client.on('disconnected', (reason) => {
-        console.log('[WhatsAppService] Disconnected reason:', reason);
-        this.status.status = 'Disconnected';
-        this.status.phoneNumber = null;
-        this.status.whatsappName = null;
-        this.status.platform = null;
-        this.status.connectedSince = null;
-        this.cleanup();
-      });
-
-      this.client.on('loading_screen', (percent, message) => {
-        console.log(`[WhatsAppService] Loading Screen Status: ${percent}% - ${message}`);
-      });
-
-      this.client.on('change_state', (state) => {
-        console.log(`[WhatsAppService] Client state changed: ${state}`);
-      });
-
-      this.client.on('remote_session_saved', () => {
-        console.log('[WhatsAppService] Remote session saved successfully.');
-      });
-
-      await this.client.initialize();
-      console.log('[WhatsAppService] Client initialization completed.');
-
-    } catch (error: any) {
-      console.error('[WhatsAppService] Fatal error during WhatsApp client setup or launch:', error);
-      this.status.status = 'Error';
-      this.status.error = error?.message || 'Configuration or browser launch error';
-      await this.cleanup();
-      throw error;
+      status.status = 'Disconnected';
+      status.phoneNumber = null;
+      status.whatsappName = null;
+      status.connectedSince = null;
+      status.qrCodeUrl = null;
     }
   }
 
-  public async disconnect(): Promise<void> {
-    console.log('[WhatsAppService] Disconnecting WhatsApp client and cleaning up session...');
-    await this.cleanup();
+  public async disconnect(email?: string): Promise<void> {
+    const instanceName = getInstanceName(email);
+    const status = this.getOrCreateStatus(instanceName);
 
-    this.status.status = 'Disconnected';
-    this.status.phoneNumber = null;
-    this.status.whatsappName = null;
-    this.status.platform = null;
-    this.status.connectedSince = null;
-
-    const sessionPath = path.join(authPath, 'session-whatsapp-session');
-    if (fs.existsSync(sessionPath)) {
-      try {
-        fs.rmSync(sessionPath, { recursive: true, force: true });
-        console.log('[WhatsAppService] Session files deleted successfully from persistent path.');
-      } catch (err) {
-        console.error('[WhatsAppService] Error deleting session files:', err);
-      }
+    console.log(`[WhatsAppService] Disconnect initiated for instance: ${instanceName}`);
+    try {
+      await this.deleteInstance(instanceName);
+    } catch (err) {
+      console.warn(`[WhatsAppService] Warning deleting instance ${instanceName}:`, err);
     }
+
+    status.status = 'Disconnected';
+    status.phoneNumber = null;
+    status.whatsappName = null;
+    status.connectedSince = null;
+    status.qrCodeUrl = null;
+    status.error = null;
   }
 
-  public async sendMessage(phoneNumber: string, message: string): Promise<void> {
-    const startTime = Date.now();
-    console.log(`[WhatsAppService] === Starting Send Message Process ===`);
-    console.log(`- Original phone input: "${phoneNumber}"`);
-
-    if (!this.client || this.status.status !== 'Connected') {
-      throw new Error('WhatsApp is not connected. Please pair your device first.');
-    }
-
-    // --- State and Diagnostics Auditing ---
-    console.log(`[WhatsAppService] Send Diagnostics Check:`);
-    try {
-      console.log(`- Client Info:`, this.client.info);
-      console.log(`- Client Info WID:`, this.client.info?.wid);
-      console.log(`- Client Info Pushname:`, this.client.info?.pushname);
-
-      const pupPage = (this.client as any).pupPage;
-      const pupBrowser = (this.client as any).pupBrowser;
-
-      console.log(`- Puppeteer Page exists: ${!!pupPage}`);
-      if (pupPage) {
-        console.log(`- Puppeteer Page Closed: ${await pupPage.isClosed()}`);
-        console.log(`- Puppeteer Page URL: ${await pupPage.url()}`);
-        console.log(`- Puppeteer Page Title: ${await pupPage.title()}`);
-      }
-
-      console.log(`- Puppeteer Browser exists: ${!!pupBrowser}`);
-      if (pupBrowser) {
-        console.log(`- Puppeteer Browser Connected: ${await pupBrowser.isConnected()}`);
-      }
-    } catch (diagErr: any) {
-      console.warn(`[WhatsAppService] Diagnostics error (ignored):`, diagErr?.message);
-    }
-
-    // Format phone: strip non-digits, ensure @c.us suffix
+  public async sendMessage(phoneNumber: string, message: string, email?: string): Promise<any> {
+    const instanceName = getInstanceName(email);
     const cleanNumber = phoneNumber.replace(/\D/g, '');
-    console.log(`- Normalized phone: "${cleanNumber}"`);
     if (!cleanNumber || cleanNumber.length < 8) {
       throw new Error(`Invalid phone number length: must be at least 8 digits. Received: "${phoneNumber}"`);
     }
 
-    const jid = `${cleanNumber}@c.us`;
-    console.log(`- Final Jid: "${jid}"`);
+    const payload = {
+      number: cleanNumber,
+      text: message,
+    };
+
+    console.log(`[WhatsAppService] Dispatching message via Evolution API to ${cleanNumber}...`);
 
     try {
-      // NOTE: Bypassing the buggy, hanging `isRegisteredUser()` selector pre-check
-      // of whatsapp-web.js to completely prevent the sendMessage pipeline from getting stuck!
-      // This is a known issue on newer WhatsApp Web sessions. We directly proceed to sendMessage.
-      console.log(`[WhatsAppService] Bypassed isRegisteredUser pre-check to prevent page locks. Proceeding directly to send.`);
+      const res = await fetch(`${url}/message/sendText/${instanceName}`, {
+        method: 'POST',
+        headers: {
+          'apikey': apiKey,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+      });
 
-      console.log(`[WhatsAppService] Sending message to JID ${jid} via whatsapp-web.js...`);
-      console.time('sendMessageTotalTime');
+      const data: any = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.error || data?.message || `HTTP ${res.status}: ${res.statusText}`);
+      }
 
-      const response = await withTimeout(
-        this.client.sendMessage(jid, message),
-        30000 // 30 second timeout protection
-      );
+      console.log(`[WhatsAppService] Message sent successfully via Evolution API.`);
 
-      console.timeEnd('sendMessageTotalTime');
-      console.log(`[WhatsAppService] Message sent successfully! Message JID ID: ${response?.id?.id || 'unknown'}`);
-
-      this.status.messagesSentToday++;
+      const status = this.getOrCreateStatus(instanceName);
+      status.messagesSentToday++;
       addToHistory(phoneNumber, message, 'Sent');
-      console.log(`[WhatsAppService] === Send Message Process Finished Successfully (Total time: ${Date.now() - startTime}ms) ===`);
-    } catch (err: any) {
-      console.error(`[WhatsAppService] Send message failed to ${phoneNumber}.`);
-      console.error(`- Error Name: ${err?.name || 'unknown'}`);
-      console.error(`- Error Message: ${err?.message || 'unknown'}`);
-      console.error(`- Stack Trace: ${err?.stack || 'unknown'}`);
 
-      this.status.messagesFailed++;
+      return {
+        success: true,
+        messageId: data?.key?.id || data?.messageId || 'unknown',
+        status: 'SENT'
+      };
+    } catch (err: any) {
+      console.error(`[WhatsAppService] Failed to send message via Evolution API:`, err);
+      const status = this.getOrCreateStatus(instanceName);
+      status.messagesFailed++;
       addToHistory(phoneNumber, message, 'Failed', err?.message || 'Send error');
       throw err;
     }
   }
 
-  private async cleanup(): Promise<void> {
-    if (this.client) {
-      try {
-        await this.client.destroy();
-      } catch (err) {
-        console.error('[WhatsAppService] Error destroying client:', err);
+  public async sendMediaUrl(
+    phoneNumber: string,
+    mediaUrl: string,
+    mediaType: 'image' | 'video' | 'audio' | 'document',
+    mimeType: string,
+    fileName?: string,
+    caption?: string,
+    email?: string
+  ): Promise<any> {
+    const instanceName = getInstanceName(email);
+    const cleanNumber = phoneNumber.replace(/\D/g, '');
+
+    const payload = {
+      number: cleanNumber,
+      mediatype: mediaType,
+      mimetype: mimeType,
+      media: mediaUrl,
+      fileName: fileName || `file_${Date.now()}`,
+      caption: caption || '',
+    };
+
+    console.log(`[WhatsAppService] Sending media (${mediaType}) via Evolution API...`);
+
+    try {
+      const res = await fetch(`${url}/message/sendMedia/${instanceName}`, {
+        method: 'POST',
+        headers: {
+          'apikey': apiKey,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+      });
+
+      const data: any = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.error || data?.message || `HTTP ${res.status}`);
       }
-      this.client = null;
+
+      const status = this.getOrCreateStatus(instanceName);
+      status.messagesSentToday++;
+      addToHistory(phoneNumber, `[Media: ${mediaType}] ${caption || ''}`, 'Sent');
+
+      return {
+        success: true,
+        messageId: data?.key?.id || data?.messageId || 'unknown',
+        status: 'SENT'
+      };
+    } catch (err: any) {
+      const status = this.getOrCreateStatus(instanceName);
+      status.messagesFailed++;
+      addToHistory(phoneNumber, `[Media: ${mediaType}] ${caption || ''}`, 'Failed', err?.message || 'Send error');
+      throw err;
     }
-    this.status.qrCodeUrl = null;
+  }
+
+  private startStatusPolling() {
+    setInterval(async () => {
+      for (const instanceName of Object.keys(this.statuses)) {
+        try {
+          await this.syncInstanceStatus(instanceName);
+        } catch (err) {
+          // Silent catch
+        }
+      }
+    }, 5000);
+  }
+
+  private async syncInstanceStatus(instanceName: string): Promise<void> {
+    const status = this.getOrCreateStatus(instanceName);
+
+    try {
+      const exists = await this.checkInstanceExists(instanceName);
+      if (!exists) {
+        status.status = 'Disconnected';
+        status.phoneNumber = null;
+        status.whatsappName = null;
+        status.qrCodeUrl = null;
+        return;
+      }
+
+      const connState = await this.getConnectionState(instanceName);
+      if (connState === 'open') {
+        status.status = 'Connected';
+        status.qrCodeUrl = null;
+        status.error = null;
+        if (!status.connectedSince) {
+          status.connectedSince = new Date().toISOString();
+        }
+
+        // Fetch details
+        const details = await this.getInstanceDetails(instanceName);
+        if (details) {
+          const rawOwner = details.owner || details.number || '';
+          status.phoneNumber = rawOwner.split('@')[0] || 'Unknown';
+          status.whatsappName = details.profileName || details.instanceName || 'WhatsApp Device';
+          status.platform = details.integration || 'Baileys';
+        }
+      } else if (connState === 'connecting') {
+        status.status = 'Waiting for Scan';
+      } else {
+        status.status = 'Disconnected';
+        status.phoneNumber = null;
+        status.whatsappName = null;
+        status.connectedSince = null;
+      }
+    } catch (err) {
+      // Ignore background sync errors
+    }
+  }
+
+  private async checkInstanceExists(instanceName: string): Promise<boolean> {
+    try {
+      const res = await fetch(`${url}/instance/fetchInstances?instanceName=${instanceName}`, {
+        headers: { 'apikey': apiKey }
+      });
+      if (!res.ok) return false;
+      const list: any = await res.json();
+      if (Array.isArray(list)) {
+        return list.some((inst) => inst.instanceName === instanceName);
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
+  private async createInstance(instanceName: string): Promise<void> {
+    const res = await fetch(`${url}/instance/create`, {
+      method: 'POST',
+      headers: {
+        'apikey': apiKey,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        instanceName,
+        qrcode: true,
+        integration: 'WHATSAPP-BAILEYS'
+      })
+    });
+    if (!res.ok) {
+      const data: any = await res.json();
+      throw new Error(data?.error || data?.message || `Failed to create instance: ${res.statusText}`);
+    }
+  }
+
+  private async getConnectQR(instanceName: string): Promise<any> {
+    const res = await fetch(`${url}/instance/connect/${instanceName}`, {
+      headers: { 'apikey': apiKey }
+    });
+    if (!res.ok) return null;
+    const data: any = await res.json();
+    return data; // contains { code, base64, pairingCode }
+  }
+
+  private async getConnectionState(instanceName: string): Promise<string> {
+    try {
+      const res = await fetch(`${url}/instance/connectionState/${instanceName}`, {
+        headers: { 'apikey': apiKey }
+      });
+      if (!res.ok) return 'close';
+      const data: any = await res.json();
+      return data?.instance?.state || 'close';
+    } catch {
+      return 'close';
+    }
+  }
+
+  private async getInstanceDetails(instanceName: string): Promise<any> {
+    try {
+      const res = await fetch(`${url}/instance/fetchInstances?instanceName=${instanceName}`, {
+        headers: { 'apikey': apiKey }
+      });
+      if (!res.ok) return null;
+      const list: any = await res.json();
+      if (Array.isArray(list)) {
+        return list.find((inst) => inst.instanceName === instanceName);
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async deleteInstance(instanceName: string): Promise<void> {
+    await fetch(`${url}/instance/delete/${instanceName}`, {
+      method: 'DELETE',
+      headers: { 'apikey': apiKey }
+    });
   }
 }
 
