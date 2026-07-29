@@ -1,5 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import multer from 'multer';
+import fs from 'fs';
+import path from 'path';
 import { whatsappService } from '../services/whatsappService';
 import { bulkService } from '../services/bulkService';
 import { contactsService } from '../services/contactsService';
@@ -16,8 +18,101 @@ const upload = multer({
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@test.com';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
 
+// Resolve persistent auth path for session storage
+const potentialPersistentPaths = [
+  '/.auth',
+  '/data/.auth',
+  '/persistent/.auth',
+  '/volume/.auth',
+];
+
+let persistentAuthPath = path.join(process.cwd(), '.auth');
+
+for (const p of potentialPersistentPaths) {
+  try {
+    const parentDir = path.dirname(p);
+    if (fs.existsSync(parentDir)) {
+      fs.mkdirSync(p, { recursive: true });
+      persistentAuthPath = p;
+      console.log(`[SessionStore] Selected persistent path for activeSessions: ${persistentAuthPath}`);
+      break;
+    }
+  } catch (err) {
+    // Fail-safe
+  }
+}
+
+// Ensure resolved directory exists
+if (!fs.existsSync(persistentAuthPath)) {
+  try {
+    fs.mkdirSync(persistentAuthPath, { recursive: true });
+  } catch (err) {
+    console.error(`[SessionStore] Failed to create directory:`, err);
+  }
+}
+
+const sessionFilePath = path.join(persistentAuthPath, 'active-sessions.json');
+
+class FileSessionStore {
+  private sessions = new Map<string, string>();
+
+  constructor() {
+    this.loadSessions();
+  }
+
+  private loadSessions() {
+    try {
+      if (fs.existsSync(sessionFilePath)) {
+        const raw = fs.readFileSync(sessionFilePath, 'utf-8');
+        const parsed = JSON.parse(raw);
+        if (typeof parsed === 'object' && parsed !== null) {
+          for (const [token, email] of Object.entries(parsed)) {
+            if (typeof token === 'string' && typeof email === 'string') {
+              this.sessions.set(token, email);
+            }
+          }
+          console.log(`[SessionStore] Loaded ${this.sessions.size} persistent sessions from disk.`);
+        }
+      }
+    } catch (err) {
+      console.error('[SessionStore] Error loading sessions:', err);
+    }
+  }
+
+  private saveSessions() {
+    try {
+      const obj: Record<string, string> = {};
+      this.sessions.forEach((email, token) => {
+        obj[token] = email;
+      });
+      fs.writeFileSync(sessionFilePath, JSON.stringify(obj, null, 2), 'utf-8');
+    } catch (err) {
+      console.error('[SessionStore] Error saving sessions:', err);
+    }
+  }
+
+  public has(token: string): boolean {
+    return this.sessions.has(token);
+  }
+
+  public get(token: string): string | undefined {
+    return this.sessions.get(token);
+  }
+
+  public set(token: string, email: string): void {
+    this.sessions.set(token, email);
+    this.saveSessions();
+  }
+
+  public delete(token: string): boolean {
+    const res = this.sessions.delete(token);
+    this.saveSessions();
+    return res;
+  }
+}
+
 // Session storage map (token -> email) for multi-user isolation
-export const activeSessions = new Map<string, string>();
+export const activeSessions = new FileSessionStore();
 
 // Middleware to authenticate admin requests
 export function authMiddleware(req: Request, res: Response, next: NextFunction) {
