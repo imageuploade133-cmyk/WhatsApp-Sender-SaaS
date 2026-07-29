@@ -1,121 +1,100 @@
-# WhatsApp Sender SaaS
+# 🚀 Easy Single-Deploy WhatsApp Sender SaaS
 
-A complete production-quality, single-container WhatsApp Sender SaaS application that allows users to link their personal WhatsApp account by scanning a QR code and dispatch single or bulk WhatsApp messages. Built cleanly inside a single unified repository and deployable as a single Render Web Service.
+This is a complete, production-ready, **100% database-free, SQL-free, Redis-free, and Docker-free** WhatsApp Sender SaaS application.
 
-## Features
-
-- **Local Administrator Login**: Simple, secure cookie-based auth using `ADMIN_EMAIL` and `ADMIN_PASSWORD` env variables.
-- **Dynamic Connection Status**: Real-time status reporting (`Disconnected`, `Generating QR`, `Waiting for Scan`, `Connected`, `Reconnecting`, `Error`).
-- **QR Code Scanning**: Seamless Base64 data URL rendering for pairing with automatic detection.
-- **Persistent Session Storage**: Utilizing `whatsapp-web.js` `LocalAuth` stored under `.auth/` directory.
-- **Single Messaging Form**: Inputs with full front-to-back Zod validation and delivery feedback.
-- **Bulk Messaging Queue**: Sequential dispatching (non-simultaneous) with random delays (default 5–10s), live progress tracking, and controls to **Pause**, **Resume**, or **Cancel** active queues.
-- **Contact Database Management**: File uploads (CSV and Excel `.xlsx` spreadsheets) and manual entries in a searchable and clearable database.
-- **Delivery Log History**: An in-memory, real-time dispatch log tracking recipient, text, timestamp, delivery status, and errors.
-- **100% Database-Free**: Clean state design built on node memory buffers, standard streams, and persistent session files.
+It is designed to be **extremely simple to deploy** and runs perfectly on any **Free Tier** cloud hosting provider (such as **Render**, **Railway**, or **Koyeb**) as a single standalone container!
 
 ---
 
-## Tech Stack
+## 🌟 Supported Hosting Servers (Free Plans)
 
-- **Frontend**: Next.js 14 (App Router), TypeScript, Tailwind CSS, Lucide Icons, React Hook Form, Zod.
-- **Backend Services**: Express.js (custom integrated Next.js server), whatsapp-web.js, Puppeteer, Multer, CSV-Parser, XLSX.
+The application can be deployed with one-click on the following free hosting providers:
 
----
-
-## Folder Structure
-
-```
-├── app/                  # Next.js App Router (Views, Layouts, Pages)
-│   ├── fonts/            # Standard fonts
-│   ├── login/            # Admin authorization screen
-│   ├── globals.css       # Tailwind stylesheet
-│   ├── layout.tsx        # HTML wrapper
-│   └── page.tsx          # Interactive SaaS Dashboard tabs and logic
-├── server/               # Custom Express server
-│   ├── index.ts          # Bootstrapping Express & Next.js handler
-│   ├── routes/
-│   │   └── api.ts        # Fully integrated backend REST API endpoints
-│   └── services/
-│     ├── whatsappService.ts  # WhatsApp client state, event, and browser hook
-│     ├── bulkService.ts      # Non-blocking sequential job dispatcher
-│     ├── contactsService.ts  # CSV/Excel parsers and contact cataloging
-│     └── historyService.ts   # Memory buffer logs for sent/failed history
-├── .auth/                # (Auto-generated) Secure LocalAuth session files
-├── render.yaml           # Deployment blueprint config for Render Web Services
-├── package.json          # Dependency and custom script listings
-└── tsconfig.json         # Strict TypeScript settings
-```
+| Hosting Provider | Plan Tier | Persistent Storage Supported? | Deployment Type |
+| :--- | :--- | :--- | :--- |
+| **Render** | **Free / Individual** | **Yes** (via Mount Volume) | Single Web Service |
+| **Railway** | **Developer / Free** | **Yes** (via Volume Mount) | Single Web Service |
+| **Koyeb** | **Free Tier** | **Yes** (via Volume) | Single Web Service |
 
 ---
 
-## Environment Variables
+## ⚡ How It Works (Robust & Simple)
 
-Configure these variables locally in a `.env` file or within the Render dashboard:
-
-| Variable | Description | Default / Example |
-| :--- | :--- | :--- |
-| `ADMIN_EMAIL` | Administrator authorization username | `admin@test.com` |
-| `ADMIN_PASSWORD` | Administrator authorization password | `admin123` |
-| `PORT` | The port the application binds to | `3000` |
-| `PUPPETEER_EXECUTABLE_PATH` | Path to google-chrome (optional fallback) | `/usr/bin/google-chrome` |
+Unlike complicated applications that require separate PostgreSQL databases, Redis queues, and Docker-Compose setups, this application is **completely self-contained**:
+- **Zero Database / Zero SQL**: Contact spreadsheets (CSVs/Excel) and logs are managed natively in standard streams and node memory buffers.
+- **Persistent Sessions**: Your WhatsApp pairing (QR code scan) is saved locally on disk under the `/.auth` directory. By mounting a free persistent disk/volume to `/.auth` on your host, **your session will survive restarts and code redeployments forever** (you scan the QR code once and never have to scan again!).
+- **Error-Free Linking**: Built on an optimized, duplicate-event-fixed version of `whatsapp-web.js` paired with an offline cached copy of WhatsApp Web `2.3000.1041652166-alpha` to ensure QR codes load instantly and messages never hang.
 
 ---
 
-## Local Development Guide
+## 🚀 1-Click Deployment Instructions
 
-### 1. Prerequisites
+Select your preferred server below for step-by-step deployment instructions:
+
+### Option A: Deployment on Render (Recommended Free Server)
+
+This repository includes a `render.yaml` configuration file allowing you to deploy the entire SaaS in minutes with persistent session disk support.
+
+1. Create a free account on **[Render](https://render.com)**.
+2. Click **New +** and select **Web Service**.
+3. Connect your GitHub repository.
+4. Configure the following settings:
+   - **Name**: `whatsapp-sender-saas`
+   - **Runtime**: `Node`
+   - **Build Command**: `npm install && npm run build`
+   - **Start Command**: `npm start`
+5. Click **Advanced** and add these **Environment Variables**:
+   - `ADMIN_EMAIL` = `your-login-email@example.com` (Used to log into your SaaS panel)
+   - `ADMIN_PASSWORD` = `your-secure-password` (Used to log into your SaaS panel)
+   - `PORT` = `3000`
+6. Scroll down to **Disks**, click **Add Disk**:
+   - **Name**: `whatsapp-session-disk`
+   - **Mount Path**: `/.auth`
+   - **Size**: `1 GiB` (This is Render's free persistent disk size!)
+7. Click **Create Web Service**.
+
+🎉 Done! Once the deployment completes, open your provided Render URL, log in with your email and password, scan the QR code once, and start sending messages!
+
+---
+
+### Option B: Deployment on Railway (Alternative Free Server)
+
+1. Create a free account on **[Railway](https://railway.app)**.
+2. Click **New Project** and select **Deploy from GitHub**.
+3. Select this repository.
+4. Add these **Environment Variables**:
+   - `ADMIN_EMAIL` = `your-login-email@example.com`
+   - `ADMIN_PASSWORD` = `your-secure-password`
+   - `PORT` = `3000`
+   - `NODE_ENV` = `production`
+5. Go to your service's **Settings** tab, scroll down to **Volumes**, and click **Add Volume**:
+   - **Mount Path**: `/.auth`
+   - **Size**: `1 GB` (To persist your WhatsApp session)
+6. Click **Deploy**.
+
+🎉 Done! Your service is live and persistent on Railway!
+
+---
+
+## 🛠️ Local Development (Run on your Computer)
+
 Ensure you have Node.js (v18 or higher) and npm installed:
-```bash
-node -v
-npm -v
-```
 
-### 2. Setup Dependencies
-Clone the repository, then install packages:
+### 1. Install dependencies
 ```bash
 npm install
 ```
 
-### 3. Running Locally
-Run the Custom Express + Next.js server in development mode:
+### 2. Configure Environment Variables
+Create a file named `.env` in the root of the project and add:
+```env
+ADMIN_EMAIL=admin@test.com
+ADMIN_PASSWORD=admin123
+PORT=3000
+```
+
+### 3. Run the development server
 ```bash
 npm run dev
 ```
-Open [http://localhost:3000](http://localhost:3000) in your web browser.
-
-- Sign in using:
-  - **Email**: `admin@test.com` (or your configured `ADMIN_EMAIL`)
-  - **Password**: `admin123` (or your configured `ADMIN_PASSWORD`)
-
----
-
-## Production Deployment on Render
-
-This repository includes a `render.yaml` configuration file allowing you to deploy the entire SaaS in minutes.
-
-### Standard Setup
-
-1. Create a new **Web Service** on [Render](https://render.com).
-2. Connect your GitHub repository.
-3. Configure the settings:
-   - **Environment**: `Node`
-   - **Build Command**: `npm install && npm run build`
-   - **Start Command**: `npm start`
-4. Add the **Environment Variables**:
-   - `ADMIN_EMAIL`
-   - `ADMIN_PASSWORD`
-   - `PORT` (set to `3000`)
-5. Deploy!
-
-### Note on Persistent Sessions
-To prevent QR codes from expiring or being lost when Render restarts, the `render.yaml` template defines a persistent Disk mount at `/.auth` which retains your WhatsApp credentials across code deployments and restarts.
-
----
-
-## Error Handling & Resiliency
-
-- **Automatic Reconnection**: If connection to WhatsApp web times out, the server attempts state recovery.
-- **Browser Crashes**: Handled cleanly without killing the parent Node/Express process.
-- **Invalid Number Verification**: Prior to sending, `isRegisteredUser()` is called on whatsapp-web.js to protect sending limits and prevent message delivery blocks.
-- **Duplicates Cleaner**: Uploaded contact sheets automatically strip non-digits and eliminate overlapping rows.
+Open [http://localhost:3000](http://localhost:3000) in your web browser. Log in using `admin@test.com` and `admin123`.
