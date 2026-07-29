@@ -55,13 +55,10 @@ interface Contact {
 
 interface HistoryEntry {
   id: string;
-  userId?: string;
-  instanceId?: string;
   recipient: string;
   message: string;
-  mediaUrl?: string;
   time: string;
-  status: 'Sent' | 'Failed' | 'Received' | 'Delivered' | 'Read';
+  status: 'Sent' | 'Failed';
   error?: string;
 }
 
@@ -1629,19 +1626,11 @@ function HistoryTable({ history }: { history: HistoryEntry[] }) {
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
                     <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full font-bold text-[10px] uppercase ${
-                      item.status === 'Sent' || item.status === 'Delivered' || item.status === 'Read'
+                      item.status === 'Sent'
                         ? 'bg-emerald-100 text-emerald-800'
-                        : item.status === 'Received'
-                        ? 'bg-blue-100 text-blue-800'
                         : 'bg-rose-100 text-rose-800'
                     }`}>
-                      <span className={`h-1.5 w-1.5 rounded-full ${
-                        item.status === 'Sent' || item.status === 'Delivered' || item.status === 'Read'
-                          ? 'bg-emerald-500'
-                          : item.status === 'Received'
-                          ? 'bg-blue-500'
-                          : 'bg-rose-500'
-                      }`} />
+                      <span className={`h-1.5 w-1.5 rounded-full ${item.status === 'Sent' ? 'bg-emerald-500' : 'bg-rose-500'}`} />
                       {item.status}
                     </span>
                   </td>

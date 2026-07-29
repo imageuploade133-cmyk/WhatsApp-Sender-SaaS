@@ -1,12 +1,9 @@
 export interface HistoryEntry {
   id: string;
-  userId?: string;
-  instanceId?: string;
   recipient: string;
   message: string;
-  mediaUrl?: string;
   time: string;
-  status: 'Sent' | 'Failed' | 'Received' | 'Delivered' | 'Read';
+  status: 'Sent' | 'Failed';
   error?: string;
 }
 
@@ -16,22 +13,11 @@ export function getHistory(): HistoryEntry[] {
   return history;
 }
 
-export function addToHistory(
-  recipient: string,
-  message: string,
-  status: 'Sent' | 'Failed' | 'Received' | 'Delivered' | 'Read',
-  error?: string,
-  mediaUrl?: string,
-  userId?: string,
-  instanceId?: string
-): HistoryEntry {
+export function addToHistory(recipient: string, message: string, status: 'Sent' | 'Failed', error?: string): HistoryEntry {
   const entry: HistoryEntry = {
     id: Math.random().toString(36).substring(2, 9),
-    userId,
-    instanceId,
     recipient,
     message,
-    mediaUrl,
     time: new Date().toISOString(),
     status,
     error,
