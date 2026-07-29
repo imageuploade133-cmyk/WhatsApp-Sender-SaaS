@@ -85,9 +85,11 @@ class FileSessionStore {
       this.sessions.forEach((email, token) => {
         obj[token] = email;
       });
-      fs.writeFileSync(sessionFilePath, JSON.stringify(obj, null, 2), 'utf-8');
+      const tempPath = sessionFilePath + '.tmp';
+      fs.writeFileSync(tempPath, JSON.stringify(obj, null, 2), 'utf-8');
+      fs.renameSync(tempPath, sessionFilePath);
     } catch (err) {
-      console.error('[SessionStore] Error saving sessions:', err);
+      console.error('[SessionStore] Error saving sessions atomically:', err);
     }
   }
 
